@@ -1,0 +1,62 @@
+name: Bug report
+description: Something does not work as described in the README
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. This project is maintained on a best-effort basis (see CONTRIBUTING.md):
+        there is no deadline and not every report can be answered at length.
+        This program targets KiCad 11, which is **not released yet**: its API can change between nightly
+        builds, so the exact build you use matters.
+        **Do not attach boardview files or other proprietary data.**
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: output
+    attributes:
+      label: Messages printed by the program
+      description: Copy the exact text from the terminal, including any traceback.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The commands or answers you typed, in order. A few component or net names are fine (rename them if sensitive).
+    validations:
+      required: false
+  - type: input
+    id: kicad
+    attributes:
+      label: KiCad version
+      description: The exact KiCad 11 nightly build (not released yet), from Help > About KiCad.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Windows and Python versions
+      placeholder: "Windows 11, Python 3.12.x"
+    validations:
+      required: true
+  - type: input
+    id: boardview
+    attributes:
+      label: Boardview format and origin (described, not attached)
+      placeholder: "GENCAD .cad, exported by ..."
+    validations:
+      required: false
+  - type: checkboxes
+    id: no-data
+    attributes:
+      label: Confirmation
+      options:
+        - label: I did not attach any boardview file or other proprietary data.
+          required: true

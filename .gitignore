@@ -1,0 +1,26 @@
+# Virtual environment and Python caches
+.venv/
+__pycache__/
+*.pyc
+
+# Heavy external build tools (kicad-python source/wheel build area, protoc): not published
+tools/
+
+# KiCad temporary files and local history
+*.lck
+.history
+**/.history/
+*-backups/
+fp-info-cache
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+
+# Boardview data (provenance not validated, never published): it lives OUTSIDE the repository
+# (see data_location.py). These patterns are a safety net against dropping a file in here by mistake.
+*.cad
+*.fz
+GL.bin

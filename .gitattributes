@@ -1,0 +1,4 @@
+# Normalise line endings so checkouts on Windows and Linux/macOS are identical
+* text=auto eol=lf
+*.whl binary
+*.cad -text
