@@ -210,6 +210,8 @@ class Session:
         self._resolver = None      # SymbolResolver, created on first use INSIDE the worker
         self.not_in_place = set()  # references the technician declared NC (not mounted on the real board)
         self.closed_nets = set()   # boardview nets the technician closed (0): a missing name is then GRAVE
+        self.current_net = None    # net of the last pin chosen: the only one whose pins carry a circle
+                                   # (None until a pin is chosen: a resumed schematic keeps its circles)
 
     def _next_position(self) -> Vector2:
         x = ROW_START_X_MIL + self._next_column * ROW_STEP_X_MIL
@@ -325,6 +327,15 @@ class Session:
         self.instances[refdes] = instance
         return resolution
 
+    def set_current_net(self, net_name: str):
+        """The circles belong to the net of the last pin the technician chose: when it changes, the
+        circles of every other net are removed (the nets keep their state, they get their circles
+        again when reopened)."""
+        self.current_net = net_name
+        for refdes, pin in list(self.circles):
+            if self.netlist.pin_to_net.get((refdes, pin)) != net_name:
+                self.remove_circle(refdes, pin)
+
     def close_net(self, net_name: str):
         self.closed_nets.add(net_name)
 
@@ -375,7 +386,8 @@ class Session:
             for refdes, pin in self.expansions[net]:
                 if refdes in by_ref:
                     confirmed = net_is_fine and (refdes, pin) in r.confirmed_ok_pins
-                    self._set_circle(refdes, pin, wanted=not confirmed)
+                    in_focus = self.current_net is None or net == self.current_net
+                    self._set_circle(refdes, pin, wanted=in_focus and not confirmed)
             if net_is_fine and r.confirmed_ok_pins:
                 confirmed_nets.append(net)
         return net_policy.Evaluation(findings, confirmed_nets)
@@ -529,6 +541,9 @@ class Session:
                     break
 
         to_confirm = len(self.circles)
+        circled_nets = {self.netlist.pin_to_net[key] for key in self.circles}
+        if len(circled_nets) == 1:
+            self.current_net = next(iter(circled_nets))
         mapping = net_check.net_position_map(self.sch)
         for key, pos in positions.items():
             if key in self.marked_pins:
@@ -589,6 +604,7 @@ class Session:
                 self.highlight_pin(refdes, pin)
                 self.register_pin(net_name, refdes, pin)
                 newly.append((refdes, pin))
+        self.evaluate()     # draws again the circles of pins still unconfirmed, drops those already confirmed
         return newly
 
     def _draw_circle(self, center: Vector2):
@@ -752,6 +768,7 @@ def expand_net(worker: KiCadWorker, session: Session, start_refdes: str, start_p
 
     print(f"\n[+] Current net: '{net_name}'")
     worker.run(session.reopen_net, net_name)
+    worker.run(session.set_current_net, net_name)
     worker.run(session.register_pin, net_name, start_refdes, start_pin)
     already_there = worker.run(session.highlight_members_on_schematic, net_name)
     if already_there:
