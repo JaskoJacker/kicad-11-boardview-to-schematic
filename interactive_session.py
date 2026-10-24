@@ -26,16 +26,13 @@ WHAT IT DOES
      Under the list of highlighted pins the program lists the FREE PINS of the components on the
      schematic with their net ("already expanded" marks nets whose menu was already done).
   5. RESUME. If the open schematic already contains components of the boardview (saved and
-     reopened, or a _L<n> copy), the session state is rebuilt by reading ONLY the schematic
+     reopened), the session state is rebuilt by reading ONLY the schematic
      (Session.rebuild_from_schematic): components = symbols of the boardview_custom library whose
      reference is in the netlist; pins TO CONFIRM = those with our circle centred on the pin; pins
      ALREADY CONFIRMED = connected to a net with the exact name of their boardview net. Then it
      rechecks and goes straight to the restart prompt. To start over, open an empty schematic.
-  6. ONE COPY PER NET. When moving to a new net, BEFORE placing anything, a copy of the schematic
-     is saved as `<project>_L<n>.kicad_sch` (+ `.kicad_pro`) in the project folder: Ln is the
-     state just completed, to which one can return (open that file and relaunch the program). The
-     open document does not change (the copy is a save_as). The open schematic must be saved BY THE
-     TECHNICIAN (Ctrl+S): the program does not save it.
+  6. SAVING. The program never saves the schematic: the technician does (Ctrl+S) and KiCad warns when
+     closing with unsaved changes. Relaunching resumes from the last saved state (see 5).
   7. A background job (every POLLING_INTERVAL_SEC seconds) rechecks the position of all the pins
      still highlighted and redraws the circle if the technician moved or rotated the component.
      NOTE: rotating a component does NOT drag the wires (eeschema limit, verified 2026-10-03):
@@ -87,7 +84,6 @@ KNOWN LIMITS:
 """
 
 import math
-import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -103,7 +99,7 @@ from kipy.errors import ApiError  # noqa: E402
 from kipy.geometry import Vector2  # noqa: E402
 from kipy.common_types import Circle  # noqa: E402
 from kipy.schematic_types import (  # noqa: E402
-    BaseLabel, SchematicGraphicShape, SchematicSymbolInstance, SchematicSymbolOrientation as Orient, SheetPath,
+    BaseLabel, SchematicGraphicShape, SchematicSymbolInstance, SchematicSymbolOrientation as Orient,
 )
 
 from kicad_worker import KiCadWorker  # noqa: E402
@@ -505,8 +501,8 @@ class Session:
 
     def rebuild_from_schematic(self) -> dict:
         """Puts the session state back together by reading ONLY the open schematic (no
-        separate state file): this way one can save, close, reopen any file
-        (even a _L<n> snapshot) and continue. The criterion, all verifiable on the schematic:
+        separate state file): this way one can save, close, reopen the file and continue.
+        The criterion, all verifiable on the schematic:
           - components: symbols whose reference is in the netlist and whose pin numbers are
             exactly those of that component in the boardview (from any library);
           - pins TO CONFIRM: those with a circle of ours (radius PIN_MARK_RADIUS_MIL)
@@ -564,27 +560,6 @@ class Session:
                 0, math.ceil((x_max_mil + ROW_STEP_X_MIL - ROW_START_X_MIL) / ROW_STEP_X_MIL))
         return {"components": len(self.instances), "to_confirm": to_confirm,
                 "confirmed": len(self.marked_pins) - to_confirm}
-
-    # --- snapshots: one file per net ----------------------------------------------------
-
-    def save_snapshot(self):
-        """Saves a COPY of the schematic as it is now in `<project>_L<n>.kicad_sch` (n = first
-        free index) in the project folder, without moving the open document.
-        Called when moving to a new net: the copy fixes the state just completed,
-        to which one can return (open that file and relaunch the program).
-
-        WARNING: `self.sch` comes from get_schematic(), which strips the sheet path from the
-        document, and with that document save_as() writes an EMPTY schematic (verified
-        2026-10-03). So a Schematic explicitly bound to the root sheet is used."""
-        doc = self.kicad.get_open_documents(bt.DOCTYPE_SCHEMATIC)[0]
-        radice = self.sch.for_sheet(SheetPath(proto=doc.sheet_path))
-        name = doc.project.name
-        present = [int(m.group(1)) for f in self.project_folder.glob(f"{name}_L*.kicad_sch")
-                    if (m := re.fullmatch(re.escape(name) + r"_L(\d+)\.kicad_sch", f.name))]
-        n = max(present) + 1 if present else 0
-        destination = self.project_folder / f"{name}_L{n}.kicad_sch"
-        radice.save_as(str(destination), overwrite=False, include_project=True)
-        return destination
 
     def highlight_pin(self, refdes: str, pin: str):
         if (refdes, pin) in self.marked_pins:
@@ -891,8 +866,7 @@ def place_with_part_choice(worker: KiCadWorker, session: Session, refdes: str):
 MAX_FREE_PIN_ROWS = 60  # beyond this, the list of free pins is truncated
 
 
-def prepare_start_pin(worker: KiCadWorker, session: Session, refdes: str, pin: str,
-                             snapshot: bool = False) -> bool:
+def prepare_start_pin(worker: KiCadWorker, session: Session, refdes: str, pin: str) -> bool:
     """Prepares the pin from which to open the menu of a net: checks that it exists and that its
     net is expandable, places the component if it is not on the schematic yet, highlights the
     pin (if it is not already). True if one can proceed with expand_net(). It holds both for the
@@ -909,14 +883,6 @@ def prepare_start_pin(worker: KiCadWorker, session: Session, refdes: str, pin: s
               f"it is not expanded, the component is not placed. Choose another pin.")
         return False
     on_schematic = session.component_already_placed(refdes)
-    if snapshot:
-        # We are moving to a new net: BEFORE touching the schematic a copy of it is saved, which fixes
-        # the state just completed (one file per net).
-        try:
-            destination = worker.run(session.save_snapshot)
-            print(f"  [+] Copy of the current state saved: {destination.name}")
-        except Exception as e:  # noqa: BLE001 — the snapshot is a safety net, it does not block the work
-            print(f"  [!] Copy of the state NOT saved ({e}). Going on anyway.")
     place_with_part_choice(worker, session, refdes)
     worker.run(session.highlight_pin, refdes, pin)
     status = "already on the schematic" if on_schematic else "placed"
@@ -1027,16 +993,16 @@ def _library_visible(kicad) -> bool:
 
 def go_to_pin(worker: KiCadWorker, session: Session, refdes: str, pin: str) -> bool:
     """Leaves the current net and gets ready to expand the net of `refdes.pin`: the checks of leaving,
-    then the pin is prepared (component placed, pin highlighted, _L<n> copy saved). False if the pin
+    then the pin is prepared (component placed, pin highlighted). False if the pin
     cannot be used (the reason was printed)."""
     run_checks(worker, session, "Check before leaving the net")
-    return prepare_start_pin(worker, session, refdes, pin, snapshot=True)
+    return prepare_start_pin(worker, session, refdes, pin)
 
 
 def restart_prompt(worker: KiCadWorker, session: Session):
     """Shows the highlighted pins and the free ones and asks where to restart from. Returns
     (refdes, pin) of the new starting point, ALREADY PREPARED (component placed, pin
-    highlighted, _L<n> copy saved), or None if the technician ends. C rechecks the
+    highlighted), or None if the technician ends. C rechecks the
     connections and re-proposes the prompt; an invalid input only re-proposes the prompt."""
     netlist = session.netlist
     while True:
@@ -1088,7 +1054,7 @@ def restart_prompt(worker: KiCadWorker, session: Session):
 
 
 def main():
-    print("=== interactive_session - resume from a saved schematic, one copy per net ===")
+    print("=== interactive_session - resume from a saved schematic ===")
     print("(KiCad 11 must already be open, with a schematic loaded and the API server enabled)\n")
 
     netlist_path = ask_netlist_path(_ask, DATA_DIR / "UX.cad", boardview.supported_extensions())
@@ -1130,7 +1096,7 @@ def main():
         session = Session(netlist, sch, kicad, folder)
 
         # RESUME: if the open schematic already contains components of the boardview (because it
-        # was saved and reopened, or it is an _L<n> copy), the state is rebuilt from
+        # was saved and reopened), the state is rebuilt from
         # there and we go on; otherwise it is a new session and the first component is asked.
         summary = worker.run(session.rebuild_from_schematic)
         to_expand = None
