@@ -211,11 +211,19 @@ def read_myformat(path: str) -> BoardviewData:
 ```
 
 The rest of the program only uses the derived views (`comp_to_pins`, `pin_to_net`, `net_to_pins`), so
-the prompt, the file check and the checks work with the new extension by themselves. Rules: fill what
-the format contains and leave `None` for the rest (never invent a datum), lengths in millimetres,
-`BoardviewError` with a message for the technician when the file cannot be read. A format that needs a
-key or other secret must read it itself (for example from a file in the boardview data folder): never
-put one in the repository.
+the prompt, the file check and the checks work with the new extension by themselves. Rules:
+
+- fill what the format contains and leave `None` for the rest (never invent a datum); every datum of
+  the file goes into the unified format, however the original format stores it (for example a bill of
+  materials kept in a separate block is merged into the components' description);
+- keep the pin, pad and net names exactly as written in the file (a format that numbers a pin `1`
+  where another writes `A1` keeps `1`): the symbols are built from those names;
+- test points and vias are optional: add them as components when the format allows it, otherwise
+  leave them out;
+- lengths in millimetres; `BoardviewError` with a message for the technician when the file cannot
+  be read;
+- a format that needs a key or other secret must read it itself (for example from a file in the
+  boardview data folder) and say where to put it when it is missing: never put one in the repository.
 
 ## Boardview data
 

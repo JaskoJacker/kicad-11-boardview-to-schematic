@@ -18,7 +18,13 @@ The helper functions shared by several formats (units, numbers...) are at the en
 "helpers" section; those of a single format carry its name.
 
 RULES FOR EVERY READING FUNCTION (the same as the unified format, boardview_data.py)
-  - it fills what its format contains and leaves None for the rest: NEVER invent a datum;
+  - it fills what its format contains and leaves None for the rest: NEVER invent a datum, and every
+    datum of the file goes into the unified format, however the original format stores it (a bill
+    of materials in a separate block is merged into the components' description);
+  - pin, pad and net names stay EXACTLY as written in the file;
+  - test points and vias are optional: components when the format allows it, otherwise left out;
+  - a key or other secret the format needs is read by the function itself (e.g. from a file in the
+    data folder), with a BoardviewError saying where to put it; it is never part of the repository;
   - lengths in millimetres, with the original unit recorded in meta["original_unit"];
   - if it is not sure about a transformation, it leaves the coordinates empty and says so in
     meta["warnings"];
