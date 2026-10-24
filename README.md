@@ -78,15 +78,18 @@ On Windows, if Poetry's virtual environment ends up in a path longer than 260 ch
 ## Usage
 
 1. Open KiCad 11 with a project and an empty schematic (`.kicad_sch`), API server enabled.
-2. Put your GENCAD boardview (`.cad`) in the **boardview data folder, which lives outside the
-   repository** (see "Boardview data" below). The program proposes a default path in that folder,
-   but you can type or paste the path of any `.cad` file (quotes from Windows "Copy as path" are
-   accepted; a wrong path is asked again).
-3. Run the entry point:
+2. Run the entry point:
 
 ```bash
 python interactive_session.py
 ```
+
+3. The program asks for the GENCAD boardview (`.cad`). The first time, it creates the **boardview
+   data folder** next to the repository (`<repository folder>_data`, outside the repository, see
+   "Boardview data" below) and prints where it is. The folder does not exist before this first run:
+   you do not have to create it. Copy your `.cad` there and enter its path, or just type or paste
+   the path of a `.cad` file stored anywhere (quotes from Windows "Copy as path" are accepted; a
+   wrong path is asked again).
 
 The program asks for the boardview, the component and the starting pin, then guides the expansion
 net by net. On the **first run on a project** it creates the library `boardview_custom.kicad_sym`
