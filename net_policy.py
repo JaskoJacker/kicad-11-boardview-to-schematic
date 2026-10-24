@@ -5,22 +5,21 @@ net_policy.py — MODULE (not launched on its own)
 How serious is each problem the net checks find? Pure decision logic: it receives the structured
 results of net_check.check (one per boardview net) and net_check.audit (whole schematic) and
 returns a list of findings, each GRAVE or NOTICE, with the automatic fix when there is one.
-Rules stated by the technician on 2026-10-18:
+Rules stated by the technician on 2026-10-18, amended on 2026-10-24:
 
   GRAVE (the program does not go on until it is solved):
-    - a net that is not connected must not exist: a dangling net (attached to a single pin), and,
-      when the technician LEAVES a net, pins of that net that are not wired (or wired in separate
-      pieces) -- a net with a single pin placed so far cannot be wired yet and is not reported.
+    - a net that is not connected must not exist: a dangling net (attached to a single pin).
       Exception (2026-10-21): a net may be NAMED DIRECTLY ON A PIN, with a label on the pin and no
       wire, to be joined to the rest later: such a pin counts as connected and is not dangling;
     - a connection with a wrong start or end point must not exist: a wire that joins pins of
       different boardview nets (SHORT), a wire on the wrong pin of a component (WRONG PIN);
     - a net with the wrong name (assumption: not stated explicitly, treated like the above);
-    - a net that is FINISHED (every pin placed for it is wired together) but has no name: the
-      technician must name it.
+    - a net the technician has CLOSED (answer 0 in its menu, or no member left to place) that has
+      no name: the technician must name it.
   NOTICE (reported, the program goes on):
-    - a net that has no name yet while it is not finished;
-    - pins still waiting for their wire while the technician is working on the net.
+    - a net that has no name yet while it is not closed;
+    - pins still waiting for their wire, or wired in separate pieces: nobody is forced to wire every
+      pin of a component, so this is never grave, not even when leaving a net or ending.
 
 Fixes the program can apply by itself (the others need the technician):
   remove_net     delete the wires and labels of the offending KiCad net (SHORT, DANGLING, WRONG PIN);
@@ -52,13 +51,12 @@ class Evaluation:
     confirmed_nets: list = field(default_factory=list)   # boardview nets wired and named correctly
 
 
-def evaluate(results: dict, audit, leaving: bool, single_pin_nets=()) -> list:
+def evaluate(results: dict, audit, closed_nets=(), single_pin_nets=()) -> list:
     """The findings, most serious first.
 
     `results`: {boardview net: net_check.CheckResult} for the nets the technician has worked on.
     `audit`: net_check.AuditResult for the whole schematic.
-    `leaving`: True when the technician is about to move to another net or to end the session;
-    only then are unwired pins a GRAVE error.
+    `closed_nets`: the boardview nets the technician has closed (only for those is a missing name GRAVE).
     `single_pin_nets`: boardview nets with fewer than two pins placed, which cannot be wired yet."""
     findings: list[Finding] = []
 
@@ -86,7 +84,6 @@ def evaluate(results: dict, audit, leaving: bool, single_pin_nets=()) -> list:
         if r.wrong_pins:
             continue
         if (r.unconnected_pins or r.mixed_nets) and boardview_net not in single_pin_nets:
-            severity = GRAVE if leaving else NOTICE
             if r.unconnected_pins:
                 listing = ", ".join(f"{x}.{y}" for x, y in r.unconnected_pins)
                 text = (f"NOT CONNECTED: net '{boardview_net}': no wire touches {listing}. Wire "
@@ -95,15 +92,13 @@ def evaluate(results: dict, audit, leaving: bool, single_pin_nets=()) -> list:
             else:
                 text = (f"NOT CONNECTED: net '{boardview_net}' is split in separate pieces: "
                         + ", ".join(f"{x}.{y} -> '{n}'" for (x, y), n in r.mixed_nets.items()))
-            findings.append(Finding(severity, "NOT_CONNECTED", text + ("" if leaving else
-                                    " (waiting for the wires)"),
+            findings.append(Finding(NOTICE, "NOT_CONNECTED", text + " (waiting for the wires)",
                                     pins=[f"{x}.{y}" for x, y in r.unconnected_pins or r.mixed_nets]))
         if r.unnamed:
             named_here.add(r.kicad_net_name)
-            if r.complete:
-                findings.append(Finding(GRAVE, "UNNAMED", f"UNNAMED NET: net '{boardview_net}' is complete (every "
-                                        f"pin placed for it is wired) but has no name: label it "
-                                        f"'{boardview_net}' in KiCad.", r.kicad_net_name))
+            if boardview_net in closed_nets:
+                findings.append(Finding(GRAVE, "UNNAMED", f"UNNAMED NET: net '{boardview_net}' was closed but "
+                                        f"has no name: label it '{boardview_net}' in KiCad.", r.kicad_net_name))
             else:
                 findings.append(Finding(NOTICE, "UNNAMED", f"UNNAMED NET: net '{boardview_net}' is wired but not "
                                         f"named yet: label it '{boardview_net}'.", r.kicad_net_name))

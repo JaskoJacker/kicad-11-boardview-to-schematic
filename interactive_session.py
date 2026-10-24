@@ -99,6 +99,7 @@ DATA_DIR = data_dir()  # boardview data files live OUTSIDE the repository
 sys.path.insert(0, str(SOLVER_DIR))
 from netlist_solver import is_huge_net, HUGE_NET_THRESHOLD  # noqa: E402
 
+from kipy.errors import ApiError  # noqa: E402
 from kipy.geometry import Vector2  # noqa: E402
 from kipy.common_types import Circle  # noqa: E402
 from kipy.schematic_types import (  # noqa: E402
@@ -141,16 +142,16 @@ def rotate_local_point(point: Vector2, orientation, mirror_x: bool, mirror_y: bo
     ROTATION CONVENTION: for 180 degrees the formula (x,y) -> (-x,-y) is
     valid regardless of the direction (clockwise/counterclockwise) — verified
     live on a component rotated by 180 degrees by the technician.
-    For 90/270 the direction is deduced from the standard KiCad convention
-    (Y downward) but NOT yet verified live in a targeted way:
-    if one day it turned out to be reversed, swap the two SSO_90/SSO_270 branches."""
+    For 90/270 the direction was verified live on 2026-10-24: a test point (pin at local
+    (-7.62, 0)) saved with angle 90 has its real pin, with the wire on it, BELOW the symbol
+    origin, i.e. at (0, +7.62); the earlier formula put the circle ABOVE it, on the opposite side."""
     x, y = point.x, point.y
     if orientation == Orient.SSO_90:
-        x, y = -y, x
+        x, y = y, -x
     elif orientation == Orient.SSO_180:
         x, y = -x, -y
     elif orientation == Orient.SSO_270:
-        x, y = y, -x
+        x, y = -y, x
     # SSO_0 and SSO_UNKNOWN: no rotation (x, y already correct)
 
     if mirror_x:
@@ -191,6 +192,10 @@ def _ask_required(msg: str) -> str:
 # by the same thread (the worker's), never concurrently.
 # ---------------------------------------------------------------------------
 
+class ComponentGone(KeyError):
+    """A component the session placed is no longer on the schematic."""
+
+
 class Session:
     def __init__(self, netlist, sch, kicad, project_folder):
         self.netlist = netlist
@@ -204,6 +209,7 @@ class Session:
         self._next_column = 0
         self._resolver = None      # SymbolResolver, created on first use INSIDE the worker
         self.not_in_place = set()  # references the technician declared NC (not mounted on the real board)
+        self.closed_nets = set()   # boardview nets the technician closed (0): a missing name is then GRAVE
 
     def _next_position(self) -> Vector2:
         x = ROW_START_X_MIL + self._next_column * ROW_STEP_X_MIL
@@ -319,12 +325,19 @@ class Session:
         self.instances[refdes] = instance
         return resolution
 
-    def evaluate(self, leaving: bool):
+    def close_net(self, net_name: str):
+        self.closed_nets.add(net_name)
+
+    def reopen_net(self, net_name: str):
+        self.closed_nets.discard(net_name)
+
+    def evaluate(self):
         """One round of checks over everything the technician has done (see net_policy for the
         severity rules): the pins of every net worked on (net_check.check) and the whole schematic
         (net_check.audit). It also keeps the circles right: a pin carries its circle exactly while it
         is not confirmed, i.e. not wired, or on a wrong net, or on a net with a grave error.
-        `leaving`: the technician is about to move to another net or to end the session."""
+        Only a net the technician closed (`closed_nets`) can raise the grave "no name" error."""
+        self.forget_deleted()
         symbols = self.sch.get_symbols()
         by_ref = {s.reference_field.text.value: s for s in symbols}
         labels = net_check.net_labels(self.sch)
@@ -353,7 +366,7 @@ class Session:
 
         # a net with fewer than two pins placed cannot be wired yet: nothing to report about its wires
         single_pin_nets = {n for n in results if len([p for p in self.expansions[n] if p[0] in by_ref]) < 2}
-        findings = net_policy.evaluate(results, audit, leaving, single_pin_nets)
+        findings = net_policy.evaluate(results, audit, self.closed_nets, single_pin_nets)
         grave_nets = {f.kicad_net for f in findings if f.severity == net_policy.GRAVE and f.kicad_net}
 
         confirmed_nets = []
@@ -390,7 +403,7 @@ class Session:
         if wanted:
             if (refdes, pin) in self.circles:
                 self.resync_circle(refdes, pin)
-            else:
+            if (refdes, pin) not in self.circles:
                 self.circles[(refdes, pin)] = self._draw_circle(self.absolute_pin_position(refdes, pin))
         else:
             self.remove_circle(refdes, pin)
@@ -403,12 +416,43 @@ class Session:
         move or ROTATE the component from KiCad's GUI, and the old in-memory copy
         would never know (found when the component was rotated by hand)."""
         old = self.instances[refdes]
-        updated = self.sch.get_items_by_id(old.id)
+        try:
+            updated = self.sch.get_items_by_id(old.id)
+        except ApiError:    # KiCad answers with an error, not an empty list, for an ID that is gone
+            updated = []
         if not updated:
-            raise KeyError(f"{refdes} no longer found on the schematic (ID {old.id} missing: "
-                            f"maybe the technician deleted it?)")
+            raise ComponentGone(f"{refdes} no longer found on the schematic (ID {old.id} missing: "
+                                f"the technician deleted it?)")
         self.instances[refdes] = updated[0]
         return updated[0]
+
+    def forget_deleted(self) -> list:
+        """The technician can delete a component (or its circle) from KiCad's GUI at any moment.
+        Drops everything the session remembers about the components that are no longer on the
+        schematic, so their pins are proposed again as if never inserted. Returns their references."""
+        on_schematic = {s.reference_field.text.value for s in self.sch.get_symbols()}
+        gone = [ref for ref in self.instances if ref not in on_schematic]
+        for ref in gone:
+            del self.instances[ref]
+            self.not_in_place.discard(ref)
+            for key in [k for k in self.circles if k[0] == ref]:
+                self._discard_circle(self.circles.pop(key))
+            self.marked_pins = {k for k in self.marked_pins if k[0] != ref}
+            for net in list(self.expansions):
+                self.expansions[net] = [k for k in self.expansions[net] if k[0] != ref]
+                if not self.expansions[net]:
+                    del self.expansions[net]
+        return gone
+
+    def _discard_circle(self, circle):
+        """Removes a circle from the schematic; it may already be gone (deleted by hand)."""
+        commit = self.sch.begin_commit()
+        try:
+            self.sch.remove_items(circle)
+        except ApiError:
+            pass
+        finally:
+            self.sch.push_commit(commit, "Remove circle of a deleted component")
 
     def absolute_pin_position(self, refdes: str, pin: str) -> Vector2:
         """Absolute position of a pin: symbol position + local offset of the pin,
@@ -535,6 +579,18 @@ class Session:
         self.circles[(refdes, pin)] = creato
         self.marked_pins.add((refdes, pin))
 
+    def highlight_members_on_schematic(self, net_name: str) -> list:
+        """Circles every free pin of `net_name` that belongs to a component ALREADY on the schematic,
+        so the technician sees what the component just placed can be wired to. A pin already
+        highlighted or confirmed is left alone. Returns the (refdes, pin) newly highlighted."""
+        newly = []
+        for refdes, pin in self.netlist.net_to_pins.get(net_name, []):
+            if refdes in self.instances and (refdes, pin) not in self.marked_pins:
+                self.highlight_pin(refdes, pin)
+                self.register_pin(net_name, refdes, pin)
+                newly.append((refdes, pin))
+        return newly
+
     def _draw_circle(self, center: Vector2):
         circle = Circle.from_center_radius(center, PIN_MARK_RADIUS_MIL * 25400)
         shape = SchematicGraphicShape()
@@ -569,8 +625,15 @@ class Session:
         already verified and correctly "closed"."""
         if (refdes, pin) not in self.circles:
             return
-        current = self.absolute_pin_position(refdes, pin)
         old_circle = self.circles[(refdes, pin)]
+        try:
+            circle_is_there = bool(self.sch.get_items_by_id(old_circle.id))
+        except ApiError:
+            circle_is_there = False
+        if not circle_is_there:     # deleted by hand: forget it, the next check draws it again if needed
+            del self.circles[(refdes, pin)]
+            return
+        current = self.absolute_pin_position(refdes, pin)
         old_center = old_circle.shape.center
         if net_check.near(old_center, current):
             return  # already aligned, no action
@@ -585,6 +648,7 @@ class Session:
         """Periodic job (see POLLING_INTERVAL_SEC): rechecks ALL the circles still
         active, not only those of the last expansion. Designed to be passed to
         worker.schedule_periodic() as it is."""
+        self.forget_deleted()
         for (refdes, pin) in list(self.circles.keys()):
             self.resync_circle(refdes, pin)
 
@@ -602,13 +666,11 @@ AUTO_REMOVE_GRAVE_NETS = True   # solve a grave error by deleting the offending 
 MAX_FIX_ROUNDS = 5              # safety limit: fixes that keep coming back are reported, not repeated
 
 
-def run_checks(worker: KiCadWorker, session: Session, leaving: bool, title: str,
-               allow_quit: bool = False) -> bool:
+def run_checks(worker: KiCadWorker, session: Session, title: str, allow_quit: bool = False) -> bool:
     """Checks everything and applies the technician's severity rules (net_policy):
     NOTICE findings are printed and the program goes on; GRAVE findings that have an automatic
     fix are fixed (the offending net is deleted) and the checks run again; GRAVE findings that
     only the technician can solve BLOCK the program: it accepts nothing until they are gone.
-    `leaving`: the technician is moving to another net or ending (unwired pins become GRAVE).
     `allow_quit`: the blocking prompt also accepts QUIT (used when ending the session).
     Returns True when no grave error is left, False if the technician quit with some left.
     Runs in the MAIN thread (it asks questions); every KiCad access goes through the worker."""
@@ -617,7 +679,7 @@ def run_checks(worker: KiCadWorker, session: Session, leaving: bool, title: str,
     print(f"\n  --- {title} ---")
     fix_rounds = 0
     while True:
-        evaluation = worker.run(session.evaluate, leaving)
+        evaluation = worker.run(session.evaluate)
         grave = [f for f in evaluation.findings if f.severity == net_policy.GRAVE]
         fixable = [f for f in grave if f.fix] if AUTO_REMOVE_GRAVE_NETS and fix_rounds < MAX_FIX_ROUNDS else []
         if fixable:
@@ -689,13 +751,19 @@ def expand_net(worker: KiCadWorker, session: Session, start_refdes: str, start_p
         return
 
     print(f"\n[+] Current net: '{net_name}'")
+    worker.run(session.reopen_net, net_name)
     worker.run(session.register_pin, net_name, start_refdes, start_pin)
+    already_there = worker.run(session.highlight_members_on_schematic, net_name)
+    if already_there:
+        print("  [+] Already on the schematic and highlighted with the circle: "
+              + ", ".join(f"{r}.{p}" for r, p in already_there))
 
     while True:
         proposals = members_to_propose(netlist, net_name, session.marked_pins)
         if not proposals:
             print("  All the members of this net have already been highlighted.")
-            run_checks(worker, session, False, f"Check of net '{net_name}'")
+            worker.run(session.close_net, net_name)
+            run_checks(worker, session, f"Check of net '{net_name}'")
             return
 
         print("  Components still to insert on this net:")
@@ -710,10 +778,11 @@ def expand_net(worker: KiCadWorker, session: Session, start_refdes: str, start_p
         choice = _ask("Which to insert: REFDES.PIN (e.g. UT27.7, also a pin of another net), or its "
                       "number in the list", "0")
         if choice == "0" or choice == "":
-            run_checks(worker, session, False, f"Check of net '{net_name}'")
+            worker.run(session.close_net, net_name)
+            run_checks(worker, session, f"Check of net '{net_name}'")
             return
         if choice.upper() == "C":
-            run_checks(worker, session, False, f"Check of net '{net_name}'")
+            run_checks(worker, session, f"Check of net '{net_name}'")
             continue
         if "." in choice:
             target = parse_pin_reference(netlist, choice)
@@ -912,7 +981,7 @@ def choose_pin_of(session: Session, refdes: str):
 
 def recheck(worker: KiCadWorker, session: Session):
     """Command C: checks everything again (every net worked on and the whole schematic)."""
-    run_checks(worker, session, False, "Recheck of everything")
+    run_checks(worker, session, "Recheck of everything")
 
 
 # ---------------------------------------------------------------------------
@@ -943,7 +1012,7 @@ def go_to_pin(worker: KiCadWorker, session: Session, refdes: str, pin: str) -> b
     """Leaves the current net and gets ready to expand the net of `refdes.pin`: the checks of leaving,
     then the pin is prepared (component placed, pin highlighted, _L<n> copy saved). False if the pin
     cannot be used (the reason was printed)."""
-    run_checks(worker, session, True, "Check before leaving the net")
+    run_checks(worker, session, "Check before leaving the net")
     return prepare_start_pin(worker, session, refdes, pin, snapshot=True)
 
 
@@ -973,7 +1042,7 @@ def restart_prompt(worker: KiCadWorker, session: Session):
             ""
         )
         if not reply:
-            run_checks(worker, session, True, "Final check", allow_quit=True)
+            run_checks(worker, session, "Final check", allow_quit=True)
             return None
         if reply.upper() == "C":
             recheck(worker, session)
