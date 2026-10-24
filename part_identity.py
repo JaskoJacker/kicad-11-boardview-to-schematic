@@ -69,6 +69,30 @@ def extract_part_identifier(description: str | None) -> str | None:
     return _code_after_brand(right)
 
 
+# prefixes whose description carries an electrical value worth putting in the Value field
+VALUE_PREFIXES = {"R", "C", "L", "FB"}
+_CAPACITANCE_OR_INDUCTANCE = re.compile(r"(\d+(?:\.\d+)?)\s*(PF|NF|UF|MF|NH|UH|MH)\b", re.IGNORECASE)
+_OHMS = re.compile(r"(\d+(?:\.\d+)?)\s*([KM]?)\s*OHMS?\b", re.IGNORECASE)
+
+
+def short_value(reference_prefix: str, description: str | None) -> str:
+    """The electrical value written in a boardview description of a resistor, capacitor, inductor or
+    ferrite bead ("RES 1K OHM 1/16W(0402)1%" -> "1K", "MLCC 0.1UF/10V" -> "0.1UF", "FERRITE BEAD 120OHM"
+    -> "120OHM"), or "" when there is none or the prefix is not one of those. Only the text before the
+    "//" is read: after it come the maker and its code."""
+    if not description or reference_prefix.upper() not in VALUE_PREFIXES:
+        return ""
+    text = description.partition("//")[0]
+    found = _CAPACITANCE_OR_INDUCTANCE.search(text)
+    if found:
+        return f"{found.group(1)}{found.group(2).upper()}"
+    found = _OHMS.search(text)
+    if found:
+        unit = "OHM" if "FERRITE" in text.upper() else ""
+        return f"{found.group(1)}{found.group(2).upper()}{unit}"
+    return ""
+
+
 def clean_symbol_name(identifier: str) -> str:
     """A valid KiCad symbol name for the identifier: every other character becomes '_'
     (a '/' or a ':' would break the library id)."""

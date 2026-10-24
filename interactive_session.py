@@ -41,8 +41,11 @@ WHAT IT DOES
 SYMBOLS (which symbol is placed for a component)
   The part is identified first: from the boardview description (part_identity.py, e.g.
   `OVP IC TPD6S300ARUKR//TI WQFN-20(3*3)` -> TPD6S300ARUKR). When the boardview says nothing
-  usable the technician is asked for the part identifier (Enter = unknown -> a generic symbol
-  that only depends on the pins, e.g. GENERIC_2P). Then symbol_resolver.py decides, in this order:
+  usable the technician is asked for the part identifier: NC leaves the component OFF the schematic;
+  Enter takes the letters of its reference as the part (R871 -> R, C2430 -> C) when it has up to 3
+  pins, and means "unknown" -> a generic symbol that only depends on the pins (e.g. GENERIC_8P) for a
+  bigger one. The value in the boardview description (RES 1K OHM ... -> 1K) goes into the placed
+  instance's Value, the whole text into its Description. Then symbol_resolver.py decides, in this order:
     1. KiCad's own libraries: a symbol with the SAME NAME IN FULL and the same pin numbers is used;
     2. our library `boardview_custom` (project folder): same rule, so a part built once is reused;
     3. otherwise a symbol named after the part is built from the boardview pins and written into
@@ -204,7 +207,7 @@ class Session:
         self.expansions = {}      # boardview net name -> [(refdes, pin)] placed in all its expansions
         self._next_column = 0
         self._resolver = None      # SymbolResolver, created on first use INSIDE the worker
-        self.not_in_place = set()  # references the technician declared NC (not mounted on the real board)
+        self.not_in_place = set()  # references the technician declared NC: left off the schematic
         self.closed_nets = set()   # boardview nets the technician closed (0): a missing name is then GRAVE
         self.current_net = None    # net of the last pin chosen: the only one whose pins carry a circle
                                    # (None until a pin is chosen: a resumed schematic keeps its circles)
@@ -258,7 +261,7 @@ class Session:
             if is_huge_net(self.netlist, net, HUGE_NET_THRESHOLD):
                 continue
             members = self.netlist.net_to_pins.get(net, [])
-            left = [m for m in members if m not in self.marked_pins]
+            left = [m for m in members if m not in self.marked_pins and m[0] not in self.not_in_place]
             start = next((m for m in members if m[0] in self.instances), None)
             if left and start:
                 out.append((net, len(left), start))
@@ -268,13 +271,18 @@ class Session:
         """[(refdes, pin, to_confirm)] for all the pins highlighted so far."""
         return [(r, p, (r, p) in self.circles) for (r, p) in sorted(self.marked_pins)]
 
-    def place_component(self, refdes: str, identifier: str | None = None, description: str = "",
-                        not_in_place: bool = False):
+    def mark_not_in_place(self, refdes: str):
+        self.not_in_place.add(refdes)
+
+    def unmark_not_in_place(self, refdes: str):
+        self.not_in_place.discard(refdes)
+
+    def place_component(self, refdes: str, identifier: str | None = None, description: str = ""):
         """Chooses the symbol of `refdes` (see symbol_resolver.py) and places it, if the component
         is not already on the schematic. `identifier` is the part identifier (from the boardview or
-        typed by the technician); None means the part is unknown and a generic symbol is used.
-        `not_in_place` (NC): the component exists only in the boardview, not on the real board: it
-        gets a generic symbol and the instance is marked Do-Not-Populate.
+        typed by the technician, or the letters of its reference); None means the part is unknown and a
+        generic symbol is used. `description` is the boardview text of THIS component: it goes into the
+        placed instance, because components that share a symbol (every resistor of the board) differ here.
         Returns the symbol_resolver.Resolution, or None if the component was already placed.
 
         After place_symbol_from_library, update_items() is needed: without it, the pin does
@@ -290,9 +298,11 @@ class Session:
         if self._resolver is None:
             self._resolver = SymbolResolver(self.kicad, self.project_folder)
         prefix = symbol_builder.reference_prefix(refdes)
+        generic_id = identifier == prefix      # the identifier is only the letters of the reference (R, C, vt...)
         if identifier:
-            resolution = self._resolver.resolve(identifier, pin, prefix,
-                                                description or symbol_library.DEFAULT_DESCRIPTION)
+            library_text = ("Generic part identified by the letters of its reference" if generic_id
+                            else description or symbol_library.DEFAULT_DESCRIPTION)
+            resolution = self._resolver.resolve(identifier, pin, prefix, library_text)
         else:
             resolution = self._resolver.resolve(part_identity.generic_symbol_name(pin), pin, prefix,
                                                 "Generic symbol: part not identified", use_native=False)
@@ -306,13 +316,14 @@ class Session:
             self.sch.push_commit(commit, f"Place boardview component {refdes}")
 
         instance.show_pin_numbers = True
-        if resolution.origin.startswith("custom"):
-            # the part identifier is the symbol's name, not its value: Value stays empty until the real value
-            # (resistance, capacitance...) is known; libraries built before this rule carry the name in Value
-            instance.value_field.text.value = ""
-        if not_in_place:
-            instance.attributes.do_not_populate = True
-            self.not_in_place.add(refdes)
+        if description:
+            instance.description_field.text.value = description
+        if resolution.origin.startswith("custom") or generic_id:
+            # the part identifier is the symbol's name, not its value: Value holds the electrical value read
+            # from the description (1K, 0.1UF...) or stays empty; libraries built before this rule carry the
+            # name in Value, hence it is set here and not only in the library
+            instance.value_field.text.value = part_identity.short_value(prefix, description)
+        self.not_in_place.discard(refdes)
         commit = self.sch.begin_commit()
         try:
             self.sch.update_items(instance)
@@ -446,7 +457,6 @@ class Session:
         gone = [ref for ref in self.instances if ref not in on_schematic]
         for ref in gone:
             del self.instances[ref]
-            self.not_in_place.discard(ref)
             for key in [k for k in self.circles if k[0] == ref]:
                 self._discard_circle(self.circles.pop(key))
             self.marked_pins = {k for k in self.marked_pins if k[0] != ref}
@@ -669,9 +679,11 @@ class Session:
 # Logic of the net expansion menu
 # ---------------------------------------------------------------------------
 
-def members_to_propose(netlist, net_name, already_marked):
+def members_to_propose(netlist, net_name, already_marked, left_off=()):
+    """The members of the net still to place: not already highlighted and not of a component the
+    technician left off the schematic (NC)."""
     members_list = netlist.net_to_pins.get(net_name, [])
-    return [(r, p) for (r, p) in members_list if (r, p) not in already_marked]
+    return [(r, p) for (r, p) in members_list if (r, p) not in already_marked and r not in left_off]
 
 
 AUTO_REMOVE_GRAVE_NETS = True   # solve a grave error by deleting the offending net (Ctrl+Z restores it)
@@ -772,7 +784,7 @@ def expand_net(worker: KiCadWorker, session: Session, start_refdes: str, start_p
               + ", ".join(f"{r}.{p}" for r, p in already_there))
 
     while True:
-        proposals = members_to_propose(netlist, net_name, session.marked_pins)
+        proposals = members_to_propose(netlist, net_name, session.marked_pins, session.not_in_place)
         if not proposals:
             print("  All the members of this net have already been highlighted.")
             worker.run(session.close_net, net_name)
@@ -816,8 +828,11 @@ def expand_net(worker: KiCadWorker, session: Session, start_refdes: str, start_p
                       f"moving on to it.")
                 return target
             if target not in proposals:
-                print(f"  {refdes}.{pin} is already highlighted.")
-                continue
+                if refdes in session.not_in_place:
+                    worker.run(session.unmark_not_in_place, refdes)     # the technician changed his mind
+                else:
+                    print(f"  {refdes}.{pin} is already highlighted.")
+                    continue
         else:
             try:
                 idx = int(choice)
@@ -826,7 +841,8 @@ def expand_net(worker: KiCadWorker, session: Session, start_refdes: str, start_p
                 print("  Invalid choice, try again.")
                 continue
 
-        place_with_part_choice(worker, session, refdes)
+        if not place_with_part_choice(worker, session, refdes):
+            continue        # NC: left off the schematic, its pins are not proposed again
         worker.run(session.highlight_pin, refdes, pin)
         worker.run(session.register_pin, net_name, refdes, pin)
         print(f"  [+] {refdes} placed (or already present), pin {pin} highlighted with the circle.")
@@ -834,62 +850,79 @@ def expand_net(worker: KiCadWorker, session: Session, start_refdes: str, start_p
 
 @dataclass
 class PartChoice:
-    """What is known about the part of a component: its identifier (None = unknown), the text to
-    keep in the symbol's description, and whether it is NC (not in place on the real board)."""
+    """What is known about the part of a component: its identifier (None = unknown), the boardview
+    text of this component (kept in the placed instance), and whether the technician answered NC
+    (the component is left off the schematic)."""
     identifier: str | None
     description: str = ""
     not_in_place: bool = False
 
 
+SIMPLE_PART_MAX_PINS = 3   # up to this many pins, "Enter" takes the letters of the reference as the part
+
+
 def choose_part(session: Session, refdes: str) -> PartChoice:
-    """The part of `refdes`. The identifier comes from the boardview description; when the
-    boardview does not say, the technician is asked: a part identifier, Enter = unknown (generic
-    symbol) or NC = not in place (the component exists only in the boardview: generic symbol marked
-    Do-Not-Populate). Runs in the MAIN thread: it uses input()."""
+    """The part of `refdes`. The identifier comes from the boardview description; when the boardview
+    does not say, the technician is asked: a part identifier, NC = leave the component off the
+    schematic (it exists only in the boardview), or Enter, which for a component with up to
+    SIMPLE_PART_MAX_PINS pins means "the letters of its reference are the part" (R871 -> R, C2430 -> C:
+    resistor, capacitor...) and for a bigger one "unknown" (generic symbol). Runs in the MAIN thread:
+    it uses input()."""
     component = session.netlist.components.get(refdes)
-    description = component.description if component else None
+    description = (component.description if component else None) or ""
     identifier = part_identity.extract_part_identifier(description)
     if identifier:
         return PartChoice(identifier, description)
-    if description:
+    prefix = symbol_builder.reference_prefix(refdes)
+    simple = len(session.component_pins(refdes)) <= SIMPLE_PART_MAX_PINS
+    if description.strip().upper() == "NOASSEMBLED":
+        print(f"  [?] {refdes}: the boardview marks it NOASSEMBLED (not mounted): answer NC to leave it off "
+              f"the schematic.")
+    elif description:
         print(f"  [?] {refdes}: the boardview describes it as '{description}', "
               f"but no part identifier can be read from that.")
     else:
         print(f"  [?] {refdes}: the boardview has no data about this component "
               f"({len(session.component_pins(refdes))} pins).")
-    answer = _ask(f"Part identifier of {refdes} (Enter = unknown, NC = not in place)", "").strip()
+    default = prefix if simple else "unknown"
+    answer = _ask(f"Part identifier of {refdes} (Enter = {default}, NC = leave it off the schematic)", "").strip()
     if answer.upper() == "NC":
         return PartChoice(None, "", True)
     if answer:
-        return PartChoice(answer, "Part identifier typed by the technician")
-    return PartChoice(None)
+        return PartChoice(answer, description)
+    return PartChoice(prefix if simple else None, description)
 
 
 def print_resolution(refdes: str, choice: PartChoice, resolution):
     """Tells the technician which symbol was chosen and why."""
-    if choice.not_in_place:
-        print(f"  [+] {refdes}: NC (not in place) -> generic symbol {resolution.lib_id} "
-              f"({resolution.origin}), marked Do-Not-Populate.")
-    elif choice.identifier is None:
+    if choice.identifier is None:
         print(f"  [+] {refdes}: part unknown -> generic symbol {resolution.lib_id} ({resolution.origin}).")
     else:
         reasons = {"native": "KiCad library symbol with the same name and pins",
                    "custom (existing)": "already built before, same pins",
                    "custom (new)": "new symbol built from the boardview pins"}
-        print(f"  [+] {refdes}: part {choice.identifier} -> {resolution.lib_id} ({reasons[resolution.origin]}).")
+        letters = " (the letters of its reference)" if choice.identifier == symbol_builder.reference_prefix(refdes) \
+            else ""
+        print(f"  [+] {refdes}: part {choice.identifier}{letters} -> {resolution.lib_id} "
+              f"({reasons[resolution.origin]}).")
     for note in filter(None, resolution.note.split("; ")):
         print(f"      [!] {note}")
 
 
-def place_with_part_choice(worker: KiCadWorker, session: Session, refdes: str):
-    """Places `refdes` if it is not on the schematic yet: first the part is identified (this may
-    ask the technician, in the main thread), then the worker chooses the symbol and places it."""
+def place_with_part_choice(worker: KiCadWorker, session: Session, refdes: str) -> bool:
+    """Places `refdes` if it is not on the schematic yet: first the part is identified (this may ask the
+    technician, in the main thread), then the worker chooses the symbol and places it. False when the
+    technician answered NC: the component is left off the schematic and remembered as such."""
     if worker.run(session.component_already_placed, refdes):
-        return
+        return True
     choice = choose_part(session, refdes)
-    resolution = worker.run(session.place_component, refdes, choice.identifier, choice.description,
-                            choice.not_in_place)
+    if choice.not_in_place:
+        worker.run(session.mark_not_in_place, refdes)
+        print(f"  [+] {refdes}: NC, left off the schematic.")
+        return False
+    resolution = worker.run(session.place_component, refdes, choice.identifier, choice.description)
     print_resolution(refdes, choice, resolution)
+    return True
 
 
 MAX_FREE_PIN_ROWS = 60  # beyond this, the list of free pins is truncated
@@ -912,7 +945,9 @@ def prepare_start_pin(worker: KiCadWorker, session: Session, refdes: str, pin: s
               f"it is not expanded, the component is not placed. Choose another pin.")
         return False
     on_schematic = session.component_already_placed(refdes)
-    place_with_part_choice(worker, session, refdes)
+    if not place_with_part_choice(worker, session, refdes):
+        print(f"  {refdes} was left off the schematic (NC): there is nothing to start from. Choose another pin.")
+        return False
     worker.run(session.highlight_pin, refdes, pin)
     status = "already on the schematic" if on_schematic else "placed"
     print(f"  [+] {refdes} {status}, pin {pin} highlighted (net '{net}').")

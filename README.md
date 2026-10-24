@@ -179,14 +179,16 @@ GRAVE error. A wire that starts on the pin and goes nowhere stays a dangling net
 ## Components that are not on the real board
 
 When the boardview says nothing about a component the program asks for its part identifier. Answer
-`NC` ("not in place") when the component exists only in the boardview and not on the physical
-board: it gets a generic symbol marked **Do-Not-Populate**.
+`NC` when the component exists only in the boardview and not on the physical board (a boardview
+description of `NOASSEMBLED` is a hint): the component is **left off the schematic** and its pins are
+not proposed again.
 
 ## How a component gets its symbol
 
 For every component the program places, it first works out **which part it is** from the boardview
 description (e.g. `OVP IC TPD6S300ARUKR//TI WQFN-20(3*3)` -> `TPD6S300ARUKR`). If the boardview
-says nothing usable it asks you for the part identifier (Enter = unknown, `NC` = not in place). Then:
+says nothing usable it asks you for the part identifier (`NC` = leave it off the schematic; Enter =
+the letters of its reference, e.g. `R` for R871, when it has up to 3 pins, otherwise unknown). Then:
 
 1. a symbol with the **same name in full** and the **same pin numbers** in KiCad's own libraries is
    used (`TPD6S300A` is not enough for `TPD6S300ARUKR`: the name must be identical);
