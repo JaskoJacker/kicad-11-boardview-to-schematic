@@ -28,11 +28,24 @@ through its API.
 The repository is self-contained: the pure-Python dependencies are pinned in `requirements.txt`
 and the `kicad-python` wheel is included in `vendor/`.
 
+Open a normal Command Prompt (not "Run as administrator": a folder created that way is owned by the
+Administrators group and Git then refuses to work in it). Go to the folder where you want the
+program, then:
+
 ```bash
-python -m venv .venv
+git clone https://github.com/JaskoJacker/kicad-11-boardview-to-schematic.git
+cd kicad-11-boardview-to-schematic
+py -3.12 -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+`git clone` creates a new folder named `kicad-11-boardview-to-schematic`: the `cd` that follows
+enters it, and the virtual environment (`.venv`) must be created **inside that folder**, not next
+to it. If you use VS Code, open that same folder (File > Open Folder): it then finds `.venv` by
+itself. If it does not, press Ctrl+Shift+P, choose *Python: Select Interpreter* and pick
+`.venv\Scripts\python.exe`. An error like `No module named 'kipy'` means the program was started
+with another Python than the one of the `.venv`.
 
 Check the installation:
 
