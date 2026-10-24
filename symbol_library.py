@@ -84,7 +84,7 @@ def symbol_sexpr(name: str, reference_prefix: str, pin_numbers: list[str],
     s += "\t\t(exclude_from_sim no)\n\t\t(in_bom yes)\n\t\t(on_board yes)\n"
     s += "\t\t(in_pos_files yes)\n\t\t(duplicate_pin_numbers_are_jumpers no)\n"
     s += _property("Reference", reference_prefix, "0", above_body, False)
-    s += _property("Value", name, "0", "0", True)
+    s += _property("Value", "", "0", "0", True)     # the name is the part identifier, not a value
     s += _property("Footprint", "", "0", "0", True)
     s += _property("Datasheet", "", "0", "0", True)
     s += _property("Description", description, "0", "0", True)

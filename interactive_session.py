@@ -306,6 +306,10 @@ class Session:
             self.sch.push_commit(commit, f"Place boardview component {refdes}")
 
         instance.show_pin_numbers = True
+        if resolution.origin.startswith("custom"):
+            # the part identifier is the symbol's name, not its value: Value stays empty until the real value
+            # (resistance, capacitance...) is known; libraries built before this rule carry the name in Value
+            instance.value_field.text.value = ""
         if not_in_place:
             instance.attributes.do_not_populate = True
             self.not_in_place.add(refdes)
@@ -452,7 +456,7 @@ class Session:
                     del self.expansions[net]
         return gone
 
-    def _discard_circle(self, circle):
+    def _discard_circle(self, circle, why: str = "Remove circle of a deleted component"):
         """Removes a circle from the schematic; it may already be gone (deleted by hand)."""
         commit = self.sch.begin_commit()
         try:
@@ -460,7 +464,21 @@ class Session:
         except ApiError:
             pass
         finally:
-            self.sch.push_commit(commit, "Remove circle of a deleted component")
+            self.sch.push_commit(commit, why)
+
+    def remove_stray_circles(self) -> int:
+        """Removes the circles that are ours (the pin-marker radius) but that the session does not
+        track: left on the schematic by an earlier run, by a component moved while the program was
+        closed, duplicated, or whose removal failed. Without this they stay forever, far from any
+        component. Returns how many were removed."""
+        radius = PIN_MARK_RADIUS_MIL * 25400
+        tracked = {circle.id.value for circle in self.circles.values()}
+        strays = [s for s in self.sch.get_shapes()
+                  if isinstance(s.shape, Circle) and abs(s.shape.radius() - radius) <= 2000
+                  and s.id.value not in tracked]
+        for shape in strays:
+            self._discard_circle(shape, "Remove a stray pin circle")
+        return len(strays)
 
     def absolute_pin_position(self, refdes: str, pin: str) -> Vector2:
         """Absolute position of a pin: symbol position + local offset of the pin,
@@ -532,9 +550,11 @@ class Session:
                 continue
             for key, pos in positions.items():
                 if net_check.near(center, pos):
-                    self.circles[key] = shape
-                    self.marked_pins.add(key)
+                    if key not in self.circles:     # a second circle on the same pin is a stray one
+                        self.circles[key] = shape
+                        self.marked_pins.add(key)
                     break
+        stray_removed = self.remove_stray_circles()
 
         to_confirm = len(self.circles)
         circled_nets = {self.netlist.pin_to_net[key] for key in self.circles}
@@ -559,7 +579,7 @@ class Session:
             self._next_column = max(
                 0, math.ceil((x_max_mil + ROW_STEP_X_MIL - ROW_START_X_MIL) / ROW_STEP_X_MIL))
         return {"components": len(self.instances), "to_confirm": to_confirm,
-                "confirmed": len(self.marked_pins) - to_confirm}
+                "confirmed": len(self.marked_pins) - to_confirm, "stray_circles_removed": stray_removed}
 
     def highlight_pin(self, refdes: str, pin: str):
         if (refdes, pin) in self.marked_pins:
@@ -640,6 +660,7 @@ class Session:
         active, not only those of the last expansion. Designed to be passed to
         worker.schedule_periodic() as it is."""
         self.forget_deleted()
+        self.remove_stray_circles()
         for (refdes, pin) in list(self.circles.keys()):
             self.resync_circle(refdes, pin)
 
@@ -776,6 +797,14 @@ def expand_net(worker: KiCadWorker, session: Session, start_refdes: str, start_p
         if choice.upper() == "C":
             run_checks(worker, session, f"Check of net '{net_name}'")
             continue
+        if "." not in choice and not choice.isdigit():
+            # REFDES alone, as at the restart prompt: its pin is chosen (or taken if it has only one)
+            typed = match_refdes(netlist, choice)
+            if typed is not None:
+                typed_pin = choose_pin_of(session, typed)
+                if typed_pin is None:
+                    continue
+                choice = f"{typed}.{typed_pin}"
         if "." in choice:
             target = parse_pin_reference(netlist, choice)
             if target is None:
@@ -950,8 +979,10 @@ def choose_pin_of(session: Session, refdes: str):
               f"nothing to expand from it.")
         return None
     if len(usable) == 1:
+        others = " The other pins are on excluded nets (GND or more pins than the limit)." \
+            if len(netlist.comp_to_pins.get(refdes, [])) > 1 else ""
         print(f"  {refdes}: its only pin that can be expanded is {usable[0]} "
-              f"(net '{netlist.pin_to_net[(refdes, usable[0])]}').")
+              f"(net '{netlist.pin_to_net[(refdes, usable[0])]}').{others}")
         return usable[0]
     print_component_card(session, refdes)
     answer = _ask(f"Which pin of {refdes} (Enter = go back)", "").strip()
@@ -1099,6 +1130,9 @@ def main():
         # was saved and reopened), the state is rebuilt from
         # there and we go on; otherwise it is a new session and the first component is asked.
         summary = worker.run(session.rebuild_from_schematic)
+        if summary["stray_circles_removed"]:
+            print(f"\n[+] {summary['stray_circles_removed']} stray circle(s) removed: they were on the "
+                  f"schematic but on no pin of a component of the boardview.")
         to_expand = None
         if summary["components"] > 0:
             print(f"\n[+] RESUME: the schematic already contains {summary['components']} components of the "
