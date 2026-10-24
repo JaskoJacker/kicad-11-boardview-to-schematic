@@ -189,7 +189,8 @@ so they are kept **outside the repository**, in a folder that is not under git:
   (e.g. `Desktop\kicad-11-boardview-to-schematic` -> `Desktop\kicad-11-boardview-to-schematic_data`);
 - or any folder you choose by setting the environment variable `BOARDVIEW_DATA_DIR`.
 
-The folder is not created automatically. `data_location.py` refuses a folder inside the
+The folder is created, empty, the first time the program asks for the boardview file and does not
+find it; the program tells you where it is. `data_location.py` refuses a folder inside the
 repository, and `.gitignore` blocks `*.cad`, `*.fz` and `GL.bin` as a second safety net.
 
 ## Layout

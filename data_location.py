@@ -11,7 +11,8 @@ Resolution order:
   2. otherwise a folder next to the repository, named after it with a "_data" suffix
      (e.g. C:\\...\\Desktop\\BOARDVIEW_API_11  ->  C:\\...\\Desktop\\BOARDVIEW_API_11_data).
 
-The folder is never created automatically, and it is refused if it would be inside the repository.
+The folder is created (empty) the first time the program asks for the boardview file and finds it
+missing, so there is a place to put the file; it is refused if it would be inside the repository.
 
 Also here: the helpers that turn a typed or pasted file path into a usable path (quotes added by
 Windows "Copy as path", padding spaces) and ask again when the file does not exist.
@@ -49,7 +50,17 @@ def ask_netlist_path(ask, default: Path) -> str:
     """Asks for the boardview file with `ask(message, default)` until an existing file is given.
 
     Accepts quoted and padded paths (see normalize_path) and explains the problem instead of
-    letting the program crash when the file does not exist."""
+    letting the program crash when the file does not exist. The folder of the proposed default path
+    is created when missing, and the technician is told where it is."""
+    folder = Path(default).parent
+    if not folder.exists():
+        try:
+            folder.mkdir(parents=True)
+            print(f"[+] Created the boardview data folder (it did not exist): {folder}\n"
+                  f"    Copy your boardview file there, or type the full path of the file below.\n")
+        except OSError as error:
+            print(f"[!] Could not create the boardview data folder {folder}: {error}\n"
+                  f"    Type the full path of the boardview file below.\n")
     while True:
         answer = ask("Netlist file (GENCAD .cad)", str(default))
         path = normalize_path(answer)
