@@ -6,7 +6,7 @@ Entry point of the program. KiCad 11 must already be open, with the schematic ed
 project's schematic and the API server enabled (Preferences > Plugins).
 
 WHAT IT DOES
-  1. Asks for the boardview (GENCAD .cad), reads its netlist, and asks for the primary component
+  1. Asks for the boardview file (any format registered in boardview.py), reads its netlist, and asks for the primary component
      and the starting pin. The component is placed on the schematic and its pin circled.
   2. For the net of that pin it shows a menu of the members not yet handled. The technician
      chooses which one to place; it is placed and the pin to connect is circled. Excluded nets
@@ -1091,7 +1091,7 @@ def main():
     print("=== interactive_session - resume from a saved schematic, one copy per net ===")
     print("(KiCad 11 must already be open, with a schematic loaded and the API server enabled)\n")
 
-    netlist_path = ask_netlist_path(_ask, DATA_DIR / "UX.cad")
+    netlist_path = ask_netlist_path(_ask, DATA_DIR / "UX.cad", boardview.supported_extensions())
     try:
         netlist = boardview.read_boardview(netlist_path)
     except BoardviewError as error:

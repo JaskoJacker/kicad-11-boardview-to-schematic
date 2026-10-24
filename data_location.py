@@ -46,8 +46,10 @@ def normalize_path(text: str) -> Path:
     return Path(os.path.expandvars(os.path.expanduser(cleaned)))
 
 
-def ask_netlist_path(ask, default: Path) -> str:
+def ask_netlist_path(ask, default: Path, extensions=()) -> str:
     """Asks for the boardview file with `ask(message, default)` until an existing file is given.
+    `extensions` (e.g. boardview.supported_extensions()) is only shown in the prompt: this module does
+    not know which formats exist and accepts any existing file, the reader decides if it can read it.
 
     Accepts quoted and padded paths (see normalize_path) and explains the problem instead of
     letting the program crash when the file does not exist. The folder of the proposed default path
@@ -62,7 +64,8 @@ def ask_netlist_path(ask, default: Path) -> str:
             print(f"[!] Could not create the boardview data folder {folder}: {error}\n"
                   f"    Type the full path of the boardview file below.\n")
     while True:
-        answer = ask("Netlist file (GENCAD .cad)", str(default))
+        answer = ask("Boardview file" + (f" (supported: {', '.join(extensions)})" if extensions else ""),
+                     str(default))
         path = normalize_path(answer)
         if path.is_file():
             return str(path)

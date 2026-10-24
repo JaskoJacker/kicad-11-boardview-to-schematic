@@ -97,7 +97,8 @@ On Windows, if Poetry's virtual environment ends up in a path longer than 260 ch
 python interactive_session.py
 ```
 
-3. The program asks for the GENCAD boardview (`.cad`). The first time, it creates the **boardview
+3. The program asks for the boardview file (formats registered in `boardview.py`, today GENCAD
+   `.cad`). The first time, it creates the **boardview
    data folder** next to the repository (`<repository folder>_data`, outside the repository, see
    "Boardview data" below) and prints where it is. The folder does not exist before this first run:
    you do not have to create it. Copy your `.cad` there and enter its path, or just type or paste
@@ -195,6 +196,26 @@ says nothing usable it asks you for the part identifier (Enter = unknown, `NC` =
    `boardview_custom`. If that name exists with other pins, the new one is saved as `<name>_2`, `_3`...
 
 An unknown part (Enter) gets a generic symbol that only depends on its pins (`GENERIC_2P`...).
+
+## Adding a boardview format
+
+A new format means ONE function in `boardview.py`, nothing else: it reads the file and returns a
+`BoardviewData` (the unified format, `boardview_data.py`), and it is registered with a decorator:
+
+```python
+@reader(".ext")
+def read_myformat(path: str) -> BoardviewData:
+    data = BoardviewData(format_name="MYFORMAT", file=Path(path).name)
+    ...                      # add components and pins ONLY with data.add_pin(...), in file order
+    return data
+```
+
+The rest of the program only uses the derived views (`comp_to_pins`, `pin_to_net`, `net_to_pins`), so
+the prompt, the file check and the checks work with the new extension by themselves. Rules: fill what
+the format contains and leave `None` for the rest (never invent a datum), lengths in millimetres,
+`BoardviewError` with a message for the technician when the file cannot be read. A format that needs a
+key or other secret must read it itself (for example from a file in the boardview data folder): never
+put one in the repository.
 
 ## Boardview data
 
