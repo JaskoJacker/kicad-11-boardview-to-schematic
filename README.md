@@ -119,6 +119,8 @@ project.
 | `KiCad answers, but no schematic editor is open` | Only the KiCad project manager is open. Open the project's schematic (double-click the `.kicad_sch`) and keep the editor window open. |
 | `KiCad is busy` | A dialog or an interactive command is open in KiCad: close it. |
 | `File not found` | The boardview path is wrong; type the full path (quotes are fine). |
+| `No module named 'kipy'` | The program was started with another Python than the one of the `.venv` (see Installation), or `pip install -r requirements.txt` did not finish. |
+| `[WinError 206] ... too long` while installing | The folder path is too long for Windows (260 characters). Clone the repository into a shorter path, for example `C:\src\`. |
 
 ## Continuing a net later
 
