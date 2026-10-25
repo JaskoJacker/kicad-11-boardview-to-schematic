@@ -129,18 +129,33 @@ component of the boardview (for example `C6118.1`) to place it and open the menu
 (`C6118` starts from `C6118.1`); otherwise the program shows its pins and asks which one. The
 list of free pins only shows pins of components already on the schematic.
 
-In the menu of a net, type the pin to insert as `REFDES.PIN` (for example `UT27.7`, any case) or
-its number in the list; `C` checks what you have wired so far and stays on the net; `0` or Enter
-ends the expansion. A `REFDES.PIN` of **another net** moves on to that net (after the usual check
+In the menu of a net, type the pin to insert as `REFDES.PIN` (for example `UT27.7`, any case), a
+`REFDES` alone (the program asks for its pin, as at the restart prompt) or its number in the list; `C`
+checks what you have wired so far and stays on the net; `0` or Enter closes the net. A `REFDES.PIN` of **another net** moves on to that net (after the usual check
 of the one you leave): a net does not have to be closed before starting another.
 
 If KiCad answers "busy" (a dialog or an interactive command such as a wire being drawn is open),
 the program says so and retries when you press Enter instead of stopping.
 
+**Saving and resuming.** The program never saves your schematic: save it yourself (Ctrl+S); KiCad warns
+you if you close it with unsaved changes. When you start the program on a schematic that already holds
+components of the boardview, it rebuilds where you were from the schematic alone (which pins are
+confirmed, which are still to confirm) and goes straight to the restart prompt.
+
+## The circles
+
+A circle marks a pin of the net you are working on that is not confirmed yet. The circles follow the
+net of the **last pin you chose**: opening a net circles at once its unconfirmed pins on components
+that are already on the schematic, and choosing a pin of another net removes the old circles (they come
+back when you reopen that net). Closing a net with `0` leaves its circles until you choose the next
+pin. A pin loses its circle when it is wired and the net carries the boardview name; if you move or
+rotate the component the circle follows (it is checked every few seconds), and a circle left where no
+pin is (an earlier run, a component deleted) is removed by the program.
+
 ## What the checks cover
 
-The checks run at the end of every net expansion, on command `C`, before you move to another net
-and when you end the session. Each run does two things:
+The checks run when you close a net, on command `C`, before you move to another net and when you end
+the session. Each run does two things:
 
 1. **The pins you placed for each net**: are they wired, on the same KiCad net, and is that net
    named like the boardview net? Pins that pass lose their circle (a pin whose net later breaks
@@ -155,15 +170,16 @@ What it finds is either a **GRAVE error** or a **NOTICE**:
 | a wire joining pins of different boardview nets (**short**), a wire on the **wrong pin** of a component | GRAVE |
 | a **dangling net**: a wire attached to a single pin, joining nothing | GRAVE |
 | a net with the **wrong name** | GRAVE |
-| pins of a net that are **not wired** (or wired in separate pieces) when you leave the net or end | GRAVE (only a notice while you are still working on the net) |
-| a net with **no name yet** | NOTICE, but GRAVE once the net is finished (every pin placed for it is wired) |
+| a net **closed** with `0` that has **no name** | GRAVE |
+| a net with **no name yet**, while you are still working on it | NOTICE |
+| pins of a net that are **not wired** (or wired in separate pieces) | NOTICE, always: nobody is forced to wire every pin |
 
 A NOTICE is printed and you carry on. A GRAVE error **blocks the program**: it accepts no command
 until it is solved. When the fix is mechanical the program applies it by itself: it deletes the
 wires and labels of the offending net (a wrong name only loses its label). That is one undo step,
 so Ctrl+Z in KiCad brings them back; set `AUTO_REMOVE_GRAVE_NETS = False` in
 `interactive_session.py` to be asked instead. What only you can solve (wiring a net that is not
-wired, naming a finished net) is explained and the program waits: fix it in KiCad and press Enter
+wired, naming a net you closed) is explained and the program waits: fix it in KiCad and press Enter
 to check again. At the very end you can also type `QUIT` to finish with errors left, and Ctrl+C
 always aborts.
 
@@ -197,7 +213,15 @@ the letters of its reference, e.g. `R` for R871, when it has up to 3 pins, other
 3. otherwise a symbol named after the part is built from the boardview pins and added to
    `boardview_custom`. If that name exists with other pins, the new one is saved as `<name>_2`, `_3`...
 
-An unknown part (Enter) gets a generic symbol that only depends on its pins (`GENERIC_2P`...).
+A component of up to 3 pins answered with Enter takes the letters of its reference as the part (`R` for
+R871, `C` for C2430): it gets KiCad's own `R` or `C` symbol when the pins match, otherwise a symbol of
+that name is built. A bigger component answered with Enter is unknown and gets a generic symbol that only
+depends on its pins (`GENERIC_8P`...).
+
+Each placed component keeps the boardview text of **its own** description in the `Description` field.
+For resistors, capacitors, inductors and ferrite beads the electrical value read from it (`RES 1K OHM
+...` -> `1K`, `MLCC 0.1UF/10V ...` -> `0.1UF`) goes into `Value`; otherwise `Value` stays empty: the part
+identifier is the name of the symbol, not its value.
 
 ## Adding a boardview format
 
@@ -261,7 +285,8 @@ repository, and `.gitignore` blocks `*.cad`, `*.fz` and `GL.bin` as a second saf
 ## Known limits
 
 - The program does not draw wires: the technician does.
-- The circle that follows component rotation is not calibrated (verified only at 180°).
+- The position of pins on components rotated by 90° or 270° follows KiCad's convention and has only
+  been tried on a few components (180° is verified).
 - It has been tried on a single boardview so far: another file may bring differences in naming or
   format that are not handled yet.
 - The GENCAD format is the only one read today.

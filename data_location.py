@@ -9,7 +9,7 @@ the repository on purpose: their provenance is not validated, so they must never
 Resolution order:
   1. the environment variable BOARDVIEW_DATA_DIR, if set;
   2. otherwise a folder next to the repository, named after it with a "_data" suffix
-     (e.g. C:\\...\\Desktop\\BOARDVIEW_API_11  ->  C:\\...\\Desktop\\BOARDVIEW_API_11_data).
+     (e.g. C:\\...\\Desktop\\<repository folder>  ->  C:\\...\\Desktop\\<repository folder>_data).
 
 The folder is created (empty) the first time the program asks for the boardview file and finds it
 missing, so there is a place to put the file; it is refused if it would be inside the repository.
