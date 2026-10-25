@@ -124,15 +124,18 @@ project.
 
 ## Continuing a net later
 
-At the restart prompt the program lists the **nets you have worked on that still have members
-not placed** (with how many). Type the **net name** to reopen its menu, or `REFDES.PIN` of any
+At the restart prompt the program prints one summary line (pins highlighted, nets in progress, free
+pins) and shows the lists only when you ask: `P` the highlighted pins, `N` the **nets you have worked on
+that still have members not placed** (with how many) and `F` the free pins of components already on the
+schematic. Type the **net name** to reopen its menu, or `REFDES.PIN` of any
 component of the boardview (for example `C6118.1`) to place it and open the menu of its net. A
 `REFDES` alone (any case) is enough when the component has a single pin that can be expanded
 (`C6118` starts from `C6118.1`); otherwise the program shows its pins and asks which one. The
-list of free pins only shows pins of components already on the schematic.
+list of free pins (`F`) only shows pins of components already on the schematic.
 
-In the menu of a net, type the pin to insert as `REFDES.PIN` (for example `UT27.7`, any case), a
-`REFDES` alone (the program asks for its pin, as at the restart prompt) or its number in the list; `C`
+The menu of a net says how many members are still to place; `L` lists them (with their numbers). Type the
+pin to insert as `REFDES.PIN` (for example `UT27.7`, any case), a `REFDES` alone (the program asks for its
+pin, as at the restart prompt) or its number in the list; `C`
 checks what you have wired so far and stays on the net; `0` or Enter closes the net. A `REFDES.PIN` of **another net** moves on to that net (after the usual check
 of the one you leave): a net does not have to be closed before starting another.
 

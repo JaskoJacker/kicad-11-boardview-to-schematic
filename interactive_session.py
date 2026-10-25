@@ -8,8 +8,8 @@ project's schematic and the API server enabled (Preferences > Plugins).
 WHAT IT DOES
   1. Asks for the boardview file (any format registered in boardview.py), reads its netlist, and asks for the primary component
      and the starting pin. The component is placed on the schematic and its pin circled.
-  2. For the net of that pin it shows a menu of the members not yet handled. The technician
-     chooses which one to place; it is placed and the pin to connect is circled. Excluded nets
+  2. For the net of that pin it opens a menu that says how many members are still to place (L lists
+     them). The technician chooses which one to place; it is placed and the pin to connect is circled. Excluded nets
      (GND, or more than 50 pins) are never expanded and a component on such a net is not placed.
   3. The technician draws the wires in KiCad and names each net with a label equal to the
      boardview net name. The program only checks the pins it placed (not the whole net): are they
@@ -21,10 +21,11 @@ WHAT IT DOES
        - REFDES.PIN of a free pin of a component already on the schematic, or of ANY component
          of the boardview (it is placed): the pin is circled and the menu of its net opens;
        - REFDES alone: shows the pins of that component with their net, to choose from;
+       - P / N / F: list the highlighted pins / the nets in progress / the FREE PINS of the components
+         on the schematic with their net ("already expanded" marks nets whose menu was already done);
+         by default only one summary line is printed, so the screen does not overflow;
        - C: recheck every net that still has pins to confirm (connect calmly, then press C);
        - Enter: end.
-     Under the list of highlighted pins the program lists the FREE PINS of the components on the
-     schematic with their net ("already expanded" marks nets whose menu was already done).
   5. RESUME. If the open schematic already contains components of the boardview (saved and
      reopened), the session state is rebuilt by reading ONLY the schematic
      (Session.rebuild_from_schematic): components = symbols of the boardview_custom library whose
@@ -791,23 +792,24 @@ def expand_net(worker: KiCadWorker, session: Session, start_refdes: str, start_p
             run_checks(worker, session, f"Check of net '{net_name}'")
             return
 
-        print("  Components still to insert on this net:")
-        for i, (r, p) in enumerate(proposals, start=1):
-            on_schematic = " (already on the schematic)" if session.component_already_placed(r) else ""
-            print(f"    {i}. {r}.{p}{on_schematic}")
-        print("    C. check now and stay on this net")
-        print("    0. end of expansion of this net")
+        print(f"  {len(proposals)} member(s) of this net still to place.")
 
         # THIS input() runs in the main thread: the worker stays free
         # to run the periodic job while we wait for the answer.
-        choice = _ask("Which to insert: REFDES.PIN (e.g. UT27.7, also a pin of another net), or its "
-                      "number in the list", "0")
+        choice = _ask("Which to insert: REFDES.PIN (e.g. UT27.7, also a pin of another net), REFDES alone, "
+                      "L = list them, C = check, 0 = close the net", "0")
         if choice == "0" or choice == "":
             worker.run(session.close_net, net_name)
             run_checks(worker, session, f"Check of net '{net_name}'")
             return
         if choice.upper() == "C":
             run_checks(worker, session, f"Check of net '{net_name}'")
+            continue
+        if choice.upper() == "L" and match_refdes(netlist, choice) is None:
+            print("  Members still to place (type a number, or REFDES.PIN):")
+            for i, (r, p) in enumerate(proposals, start=1):
+                on_schematic = " (already on the schematic)" if session.component_already_placed(r) else ""
+                print(f"    {i}. {r}.{p}{on_schematic}")
             continue
         if "." not in choice and not choice.isdigit():
             # REFDES alone, as at the restart prompt: its pin is chosen (or taken if it has only one)
@@ -954,12 +956,31 @@ def prepare_start_pin(worker: KiCadWorker, session: Session, refdes: str, pin: s
     return True
 
 
+def usable_free_pins(worker: KiCadWorker, session: Session) -> list:
+    """The free pins of the components on the schematic from which one can restart: those on huge
+    nets (not expandable) are left out."""
+    free = worker.run(session.free_pins)
+    return [(r, p, n, expanded) for (r, p, n, expanded) in free
+            if not is_huge_net(session.netlist, n, HUGE_NET_THRESHOLD)]
+
+
+def print_highlighted_pins(listing: list):
+    print("\nPins already highlighted on the schematic:")
+    for i, (r, p, to_confirm) in enumerate(listing, start=1):
+        note = "  (to confirm)" if to_confirm else ""
+        print(f"  {i}. {r}.{p}{note}")
+
+
+def print_nets_in_progress(in_progress: list):
+    print("\nNets worked on that still have members to place (type the net name to continue it):")
+    for net, left, _start in in_progress[:MAX_FREE_PIN_ROWS]:
+        print(f"  {net}  ({left} member(s) not placed yet)")
+
+
 def print_free_pins(worker: KiCadWorker, session: Session):
     """List of the free pins of the components on the schematic, with their net, from which one
     can restart. Pins on huge nets (not expandable) are excluded."""
-    free = worker.run(session.free_pins)
-    lines = [(r, p, n, expanded) for (r, p, n, expanded) in free
-             if not is_huge_net(session.netlist, n, HUGE_NET_THRESHOLD)]
+    lines = usable_free_pins(worker, session)
     if not lines:
         print("\nFree pins of the components on the schematic: none (other pins only on excluded nets).")
         return
@@ -1072,22 +1093,16 @@ def restart_prompt(worker: KiCadWorker, session: Session):
     connections and re-proposes the prompt; an invalid input only re-proposes the prompt."""
     netlist = session.netlist
     while True:
-        print("\nPins already highlighted on the schematic:")
         listing = worker.run(session.marked_pins_list)
-        for i, (r, p, to_confirm) in enumerate(listing, start=1):
-            note = "  (to confirm)" if to_confirm else ""
-            print(f"  {i}. {r}.{p}{note}")
         in_progress = worker.run(session.nets_in_progress)
-        if in_progress:
-            print("\nNets worked on that still have members to place (type the net name to continue it):")
-            for net, left, _start in in_progress[:MAX_FREE_PIN_ROWS]:
-                print(f"  {net}  ({left} member(s) not placed yet)")
-        print_free_pins(worker, session)
+        free_count = len(usable_free_pins(worker, session))
+        print(f"\n{len(listing)} pin(s) highlighted, {len(in_progress)} net(s) in progress, "
+              f"{free_count} free pin(s) on the schematic.")
 
         reply = _ask(
-            "Where to restart from: a NET NAME from the list above, REFDES.PIN (a free pin of a "
-            "component on the schematic, or of any component of the boardview), REFDES alone to see "
-            "its pins, C = recheck the connections, Enter = end",
+            "Where to restart from: a NET NAME, REFDES.PIN (any component of the boardview), REFDES alone "
+            "to see its pins, P = highlighted pins, N = nets in progress, F = free pins, "
+            "C = recheck the connections, Enter = end",
             ""
         )
         if not reply:
@@ -1095,6 +1110,17 @@ def restart_prompt(worker: KiCadWorker, session: Session):
             return None
         if reply.upper() == "C":
             recheck(worker, session)
+            continue
+        if reply.upper() in ("P", "N", "F") and match_refdes(netlist, reply) is None:
+            if reply.upper() == "P":
+                print_highlighted_pins(listing)
+            elif reply.upper() == "N":
+                if in_progress:
+                    print_nets_in_progress(in_progress)
+                else:
+                    print("  No net in progress.")
+            else:
+                print_free_pins(worker, session)
             continue
         by_net = {net: start for net, _left, start in in_progress}
         if reply in by_net:
